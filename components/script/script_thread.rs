@@ -512,8 +512,9 @@ pub struct ScriptThread {
     worklet_thread_pool: DOMRefCell<Option<Rc<WorkletThreadPool>>>,
 
     /// A list of pipelines containing documents that finished loading all their blocking
-    /// resources during a turn of the event loop.
-    docs_with_no_blocking_loads: DOMRefCell<HashSet<JS<Document>>>,
+    /// resources during a turn of the event loop, and whether an iframe load event should
+    /// be dispatched for them.
+    docs_with_no_blocking_loads: DOMRefCell<HashSet<(JS<Document>, bool)>>,
 
     /// A list of nodes with in-progress CSS transitions, which roots them for the duration
     /// of the transition.
@@ -647,12 +648,12 @@ impl ScriptThread {
         })
     }
 
-    pub fn mark_document_with_no_blocked_loads(doc: &Document) {
+    pub fn mark_document_with_no_blocked_loads(doc: &Document, dispatch_iframe_load_event: bool) {
         SCRIPT_THREAD_ROOT.with(|root| {
             let script_thread = unsafe { &*root.get().unwrap() };
             script_thread.docs_with_no_blocking_loads
                 .borrow_mut()
-                .insert(JS::from_ref(doc));
+                .insert((JS::from_ref(doc), dispatch_iframe_load_event));
         })
     }
 
@@ -699,12 +700,15 @@ impl ScriptThread {
         });
     }
 
-    pub fn process_attach_layout(new_layout_info: NewLayoutInfo, origin: MutableOrigin) {
+    pub fn process_attach_layout(new_layout_info: NewLayoutInfo,
+                                 origin: MutableOrigin,
+                                 is_initial_iframe_about_blank_layout: bool) {
         SCRIPT_THREAD_ROOT.with(|root| {
             if let Some(script_thread) = root.get() {
                 let script_thread = unsafe { &*script_thread };
                 script_thread.profile_event(ScriptThreadEventCategory::AttachLayout, || {
-                    script_thread.handle_new_layout(new_layout_info, origin);
+                    script_thread.handle_new_layout(new_layout_info, origin,
+                                                    is_initial_iframe_about_blank_layout);
                 })
             }
         });
@@ -980,7 +984,7 @@ impl ScriptThread {
                             MutableOrigin::new(ImmutableOrigin::new_opaque())
                         };
 
-                        self.handle_new_layout(new_layout_info, origin);
+                        self.handle_new_layout(new_layout_info, origin, false);
                     })
                 }
                 FromConstellation(ConstellationControlMsg::Resize(id, size, size_type)) => {
@@ -1080,7 +1084,7 @@ impl ScriptThread {
             // https://html.spec.whatwg.org/multipage/#the-end step 6
             let mut docs = self.docs_with_no_blocking_loads.borrow_mut();
             for document in docs.iter() {
-                document.maybe_queue_document_completion();
+                document.0.maybe_queue_document_completion(document.1);
             }
             docs.clear();
         }
@@ -1224,8 +1228,8 @@ impl ScriptThread {
             ConstellationControlMsg::WebFontLoaded(pipeline_id) =>
                 self.handle_web_font_loaded(pipeline_id),
             ConstellationControlMsg::DispatchIFrameLoadEvent {
-                target: browsing_context_id, parent: parent_id, child: child_id } =>
-                self.handle_iframe_load_event(parent_id, browsing_context_id, child_id),
+                target: browsing_context_id, parent: parent_id, child: child_id, should_process_event } =>
+                self.handle_iframe_load_event(parent_id, browsing_context_id, child_id, should_process_event),
             ConstellationControlMsg::DispatchStorageEvent(pipeline_id, storage, url, key, old_value, new_value) =>
                 self.handle_storage_event(pipeline_id, storage, url, key, old_value, new_value),
             ConstellationControlMsg::ReportCSSError(pipeline_id, filename, line, column, msg) =>
@@ -1426,7 +1430,8 @@ impl ScriptThread {
         window.set_scroll_offsets(scroll_offsets)
     }
 
-    fn handle_new_layout(&self, new_layout_info: NewLayoutInfo, origin: MutableOrigin) {
+    fn handle_new_layout(&self, new_layout_info: NewLayoutInfo, origin: MutableOrigin,
+                         is_initial_iframe_about_blank_layout: bool) {
         let NewLayoutInfo {
             parent_info,
             new_pipeline_id,
@@ -1476,7 +1481,8 @@ impl ScriptThread {
                                            load_data.url.clone(),
                                            origin);
         if load_data.url.as_str() == "about:blank" {
-            self.start_page_load_about_blank(new_load);
+            self.start_page_load_about_blank(new_load,
+                                             is_initial_iframe_about_blank_layout);
         } else {
             self.pre_page_load(new_load, load_data);
         }
@@ -1858,10 +1864,12 @@ impl ScriptThread {
     fn handle_iframe_load_event(&self,
                                 parent_id: PipelineId,
                                 browsing_context_id: BrowsingContextId,
-                                child_id: PipelineId) {
+                                child_id: PipelineId,
+                                should_process_event: bool)
+    {
         let iframe = self.documents.borrow().find_iframe(parent_id, browsing_context_id);
         match iframe {
-            Some(iframe) => iframe.iframe_load_event_steps(child_id),
+            Some(iframe) => iframe.iframe_load_event_steps(child_id, should_process_event),
             None => warn!("Message sent to closed pipeline {}.", parent_id),
         }
     }
@@ -2353,7 +2361,7 @@ impl ScriptThread {
             req_init.url = ServoUrl::parse("about:blank").unwrap();
         }
 
-        let context = ParserContext::new(id, load_data.url);
+        let context = ParserContext::new(id, load_data.url, false);
         self.incomplete_parser_contexts.borrow_mut().push((id, context));
 
         self.constellation_chan.send(ConstellationMsg::InitiateNavigateRequest(req_init, id)).unwrap();
@@ -2392,13 +2400,14 @@ impl ScriptThread {
 
     /// Synchronously fetch `about:blank`. Stores the `InProgressLoad`
     /// argument until a notification is received that the fetch is complete.
-    fn start_page_load_about_blank(&self, incomplete: InProgressLoad) {
+    fn start_page_load_about_blank(&self, incomplete: InProgressLoad,
+                                   is_initial_iframe_about_blank_layout: bool) {
         let id = incomplete.pipeline_id;
 
         self.incomplete_loads.borrow_mut().push(incomplete);
 
         let url = ServoUrl::parse("about:blank").unwrap();
-        let mut context = ParserContext::new(id, url.clone());
+        let mut context = ParserContext::new(id, url.clone(), is_initial_iframe_about_blank_layout);
 
         let mut meta = Metadata::default(url);
         meta.set_content_type(Some(&mime!(Text / Html)));

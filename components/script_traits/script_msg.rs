@@ -97,7 +97,8 @@ pub enum ScriptMsg {
     HeadParsed,
     /// All pending loads are complete, and the `load` event for this pipeline
     /// has been dispatched.
-    LoadComplete(PipelineId),
+    /// The boolean value tells whether the iframe load event should be triggered.
+    LoadComplete(PipelineId, bool),
     /// A new load has been requested, with an option to replace the current entry once loaded
     /// instead of adding a new entry.
     LoadUrl(PipelineId, LoadData, bool),

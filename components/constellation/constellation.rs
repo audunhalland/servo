@@ -1014,9 +1014,9 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
                 self.handle_load_url_msg(source_id, load_data, replace);
             }
             // A page loaded has completed all parsing, script, and reflow messages have been sent.
-            FromScriptMsg::LoadComplete(pipeline_id) => {
+            FromScriptMsg::LoadComplete(pipeline_id, dispatch_iframe_load_event) => {
                 debug!("constellation got load complete message");
-                self.handle_load_complete_msg(pipeline_id)
+                self.handle_load_complete_msg(pipeline_id, dispatch_iframe_load_event)
             }
             // Handle a forward or back request
             FromScriptMsg::TraverseHistory(top_level_browsing_context_id, direction) => {
@@ -1497,7 +1497,7 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
         }
     }
 
-    fn handle_subframe_loaded(&mut self, pipeline_id: PipelineId) {
+    fn handle_subframe_loaded(&mut self, pipeline_id: PipelineId, should_process_load_event: bool) {
         let (browsing_context_id, parent_id) = match self.pipelines.get(&pipeline_id) {
             Some(pipeline) => match pipeline.parent_info {
                 Some((parent_id, _)) => (pipeline.browsing_context_id, parent_id),
@@ -1509,6 +1509,7 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
             target: browsing_context_id,
             parent: parent_id,
             child: pipeline_id,
+            should_process_event: should_process_load_event,
         };
         let result = match self.pipelines.get(&parent_id) {
             Some(parent) => parent.event_loop.send(msg),
@@ -1811,7 +1812,8 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
         self.compositor_proxy.send(ToCompositorMsg::LoadStart);
     }
 
-    fn handle_load_complete_msg(&mut self, pipeline_id: PipelineId) {
+    fn handle_load_complete_msg(&mut self, pipeline_id: PipelineId,
+                                dispatch_iframe_load_event: bool) {
         let mut webdriver_reset = false;
         if let Some((expected_pipeline_id, ref reply_chan)) = self.webdriver.load_channel {
             debug!("Sending load to WebDriver");
@@ -1824,7 +1826,7 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
             self.webdriver.load_channel = None;
         }
         self.compositor_proxy.send(ToCompositorMsg::LoadComplete);
-        self.handle_subframe_loaded(pipeline_id);
+        self.handle_subframe_loaded(pipeline_id, dispatch_iframe_load_event);
     }
 
     fn handle_traverse_history_msg(&mut self,

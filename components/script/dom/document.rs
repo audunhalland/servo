@@ -1655,7 +1655,8 @@ impl Document {
 
     // https://html.spec.whatwg.org/multipage/#the-end
     // https://html.spec.whatwg.org/multipage/#delay-the-load-event
-    pub fn finish_load(&self, load: LoadType) {
+    pub fn finish_load(&self, load: LoadType,
+                       should_dispatch_load_event: bool) {
         // This does not delay the load event anymore.
         debug!("Document got finish_load: {:?}", load);
         self.loader.borrow_mut().finish_load(&load);
@@ -1700,11 +1701,11 @@ impl Document {
             return;
         }
 
-        ScriptThread::mark_document_with_no_blocked_loads(self);
+        ScriptThread::mark_document_with_no_blocked_loads(self, should_dispatch_load_event);
     }
 
     // https://html.spec.whatwg.org/multipage/#the-end
-    pub fn maybe_queue_document_completion(&self) {
+    pub fn maybe_queue_document_completion(&self, dispatch_iframe_load_event: bool) {
         if self.loader.borrow().is_blocked() {
             // Step 6.
             return;
@@ -1716,7 +1717,7 @@ impl Document {
         // The rest will ever run only once per document.
         // Step 7.
         debug!("Document loads are complete.");
-        let handler = box DocumentProgressHandler::new(Trusted::new(self));
+        let handler = box DocumentProgressHandler::new(Trusted::new(self), dispatch_iframe_load_event);
         self.window.dom_manipulation_task_source().queue(handler, self.window.upcast()).unwrap();
 
         // Step 8.
@@ -1895,10 +1896,10 @@ impl Document {
         }
     }
 
-    pub fn notify_constellation_load(&self) {
+    pub fn notify_constellation_load(&self, dispatch_iframe_load_event: bool) {
         let global_scope = self.window.upcast::<GlobalScope>();
         let pipeline_id = global_scope.pipeline_id();
-        let load_event = ConstellationMsg::LoadComplete(pipeline_id);
+        let load_event = ConstellationMsg::LoadComplete(pipeline_id, dispatch_iframe_load_event);
         global_scope.constellation_chan().send(load_event).unwrap();
     }
 
@@ -3891,13 +3892,15 @@ pub fn determine_policy_for_token(token: &str) -> Option<ReferrerPolicy> {
 }
 
 pub struct DocumentProgressHandler {
-    addr: Trusted<Document>
+    addr: Trusted<Document>,
+    dispatch_iframe_load_event: bool,
 }
 
 impl DocumentProgressHandler {
-     pub fn new(addr: Trusted<Document>) -> DocumentProgressHandler {
+     pub fn new(addr: Trusted<Document>, dispatch_iframe_load_event: bool) -> DocumentProgressHandler {
         DocumentProgressHandler {
-            addr: addr
+            addr: addr,
+            dispatch_iframe_load_event: dispatch_iframe_load_event,
         }
     }
 
@@ -3906,7 +3909,7 @@ impl DocumentProgressHandler {
         document.set_ready_state(DocumentReadyState::Complete);
     }
 
-    fn dispatch_load(&self) {
+    fn dispatch_load(&self, dispatch_iframe_load_event: bool) {
         let document = self.addr.root();
         if document.browsing_context().is_none() {
             return;
@@ -3931,8 +3934,7 @@ impl DocumentProgressHandler {
         window.reflow(ReflowGoal::ForDisplay,
                       ReflowQueryType::NoQuery,
                       ReflowReason::DocumentLoaded);
-
-        document.notify_constellation_load();
+        document.notify_constellation_load(dispatch_iframe_load_event);
     }
 }
 
@@ -3944,7 +3946,7 @@ impl Runnable for DocumentProgressHandler {
         let window = document.window();
         if window.is_alive() {
             self.set_ready_state_complete();
-            self.dispatch_load();
+            self.dispatch_load(self.dispatch_iframe_load_event);
             if let Some(fragment) = document.url().fragment() {
                 document.check_and_scroll_fragment(fragment);
             }
