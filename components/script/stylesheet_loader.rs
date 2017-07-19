@@ -186,7 +186,7 @@ impl FetchResponseListener for StylesheetContext {
             document.decrement_script_blocking_stylesheet_count();
         }
 
-        document.finish_load(LoadType::Stylesheet(self.url.clone()));
+        document.finish_load(LoadType::Stylesheet(self.url.clone()), true);
 
         if let Some(any_failed) = owner.load_finished(successful) {
             let event = if any_failed { atom!("error") } else { atom!("load") };

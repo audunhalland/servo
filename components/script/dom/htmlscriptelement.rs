@@ -221,7 +221,7 @@ impl FetchResponseListener for ScriptContext {
             ExternalScriptKind::ParsingBlocking => document.pending_parsing_blocking_script_loaded(&elem, load),
         }
 
-        document.finish_load(LoadType::Script(self.url.clone()));
+        document.finish_load(LoadType::Script(self.url.clone()), true);
     }
 }
 

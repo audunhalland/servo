@@ -187,7 +187,8 @@ impl HTMLIFrameElement {
                 };
 
                 self.pipeline_id.set(Some(new_pipeline_id));
-                ScriptThread::process_attach_layout(new_layout_info, document.origin().clone());
+                ScriptThread::process_attach_layout(new_layout_info, document.origin().clone(), true);
+
             },
             NavigationType::Regular => {
                 let load_info = IFrameLoadInfoWithData {
@@ -357,7 +358,8 @@ impl HTMLIFrameElement {
     }
 
     /// https://html.spec.whatwg.org/multipage/#iframe-load-event-steps steps 1-4
-    pub fn iframe_load_event_steps(&self, loaded_pipeline: PipelineId) {
+    pub fn iframe_load_event_steps(&self, loaded_pipeline: PipelineId,
+                                   should_process_event: bool) {
         // TODO(#9592): assert that the load blocker is present at all times when we
         //              can guarantee that it's created for the case of iframe.reload().
         if Some(loaded_pipeline) != self.pending_pipeline_id.get() { return; }
@@ -369,13 +371,14 @@ impl HTMLIFrameElement {
         // TODO Step 3 - set child document  `mut iframe load` flag
 
         // Step 4
-        self.upcast::<EventTarget>().fire_event(atom!("load"));
+        if should_process_event {
+            self.upcast::<EventTarget>().fire_event(atom!("load"));
 
-        let mut blocker = self.load_blocker.borrow_mut();
-        LoadBlocker::terminate(&mut blocker);
+            let mut blocker = self.load_blocker.borrow_mut();
+            LoadBlocker::terminate(&mut blocker);
+        }
 
         // TODO Step 5 - unset child document `mut iframe load` flag
-
         let window = window_from_node(self);
         window.reflow(ReflowGoal::ForDisplay,
                       ReflowQueryType::NoQuery,
@@ -839,6 +842,6 @@ impl IFrameLoadEventSteps {
 impl Runnable for IFrameLoadEventSteps {
     fn handler(self: Box<IFrameLoadEventSteps>) {
         let this = self.frame_element.root();
-        this.iframe_load_event_steps(self.pipeline_id);
+        this.iframe_load_event_steps(self.pipeline_id, true);
     }
 }

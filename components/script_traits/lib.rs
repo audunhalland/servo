@@ -289,6 +289,8 @@ pub enum ConstellationControlMsg {
         parent: PipelineId,
         /// The pipeline that has completed loading.
         child: PipelineId,
+        /// Whether the load event should be processed by the iframe element.
+        should_process_event: bool,
     },
     /// Cause a `storage` event to be dispatched at the appropriate window.
     /// The strings are key, old value and new value.
@@ -832,4 +834,3 @@ pub trait Painter: Sync + Send {
                           properties: Vec<(Atom, String)>,
                           sender: IpcSender<CanvasData>);
 }
-

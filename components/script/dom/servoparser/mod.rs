@@ -73,6 +73,8 @@ pub struct ServoParser {
     reflector: Reflector,
     /// The document associated with this parser.
     document: JS<Document>,
+    /// Whether the document being parsed is the initial about:blank loaded when an iframe is created.
+    is_initial_iframe_about_blank_document: Cell<bool>,
     /// Input received from network.
     #[ignore_heap_size_of = "Defined in html5ever"]
     network_input: DOMRefCell<BufferQueue>,
@@ -329,6 +331,7 @@ impl ServoParser {
             script_nesting_level: Default::default(),
             aborted: Default::default(),
             script_created_parser: kind == ParserKind::ScriptCreated,
+            is_initial_iframe_about_blank_document: Cell::new(false),
         }
     }
 
@@ -463,8 +466,11 @@ impl ServoParser {
         self.document.set_current_parser(None);
 
         // Steps 3-12 are in another castle, namely finish_load.
+        // These steps are supressed for the initial about:blank load when an iframe is created,
+        // otherwise the load event will be processed twice for iframes without a "src".
         let url = self.tokenizer.borrow().url().clone();
-        self.document.finish_load(LoadType::PageSource(url));
+        let load = LoadType::PageSource(url);
+        self.document.finish_load(load, !self.is_initial_iframe_about_blank_document.get());
     }
 }
 
@@ -557,15 +563,19 @@ pub struct ParserContext {
     id: PipelineId,
     /// The URL for this document.
     url: ServoUrl,
+    /// Whether this context is being created to process the initial about:blank load in a new iframe.
+    is_initial_iframe_about_blank_document: bool,
 }
 
 impl ParserContext {
-    pub fn new(id: PipelineId, url: ServoUrl) -> ParserContext {
+    pub fn new(id: PipelineId, url: ServoUrl,
+               is_initial_iframe_about_blank_document: bool) -> ParserContext {
         ParserContext {
             parser: None,
             is_synthesized_document: false,
             id: id,
             url: url,
+            is_initial_iframe_about_blank_document: is_initial_iframe_about_blank_document,
         }
     }
 }
@@ -609,6 +619,8 @@ impl FetchResponseListener for ParserContext {
         if parser.aborted.get() {
             return;
         }
+
+        parser.is_initial_iframe_about_blank_document.set(self.is_initial_iframe_about_blank_document);
 
         self.parser = Some(Trusted::new(&*parser));
 
